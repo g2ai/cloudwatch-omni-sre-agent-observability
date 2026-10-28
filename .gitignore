@@ -1,0 +1,34 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Secrets (never commit)
+.env
+*.env
+
+# CloudWatch Omni IDE extension (local traces, collector and MCP tokens)
+.omni/
+.env.omni
+.mcp.json
+
+# Local AI and editor tool settings
+.claude/
+.cursor/
+.kiro/
+.agents/
+.vscode/
+
+# Terraform (keep .terraform.lock.hcl committed)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+
+# Build artifacts
+dist/
+*.zip
+
+# OS
+Thumbs.db
