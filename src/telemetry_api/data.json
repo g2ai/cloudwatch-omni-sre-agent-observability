@@ -1,0 +1,23 @@
+{
+  "alerts": {
+    "ALR-1001": {"service": "checkout", "metric": "p95_latency_ms", "threshold": 800, "severity": "high"},
+    "ALR-1002": {"service": "payments", "metric": "error_rate_pct", "threshold": 2.0, "severity": "critical"},
+    "ALR-1003": {"service": "inventory", "metric": "queue_depth", "threshold": 500, "severity": "medium"}
+  },
+  "metrics_current": {
+    "checkout":  {"p95_latency_ms": 1840, "error_rate_pct": 0.4, "requests_per_min": 7200},
+    "payments":  {"p95_latency_ms": 310,  "error_rate_pct": 5.6, "requests_per_min": 2700},
+    "inventory": {"p95_latency_ms": 95,   "error_rate_pct": 0.1, "queue_depth": 1320}
+  },
+  "metrics_stale_snapshot": {
+    "age_minutes": 95,
+    "checkout":  {"p95_latency_ms": 610,  "error_rate_pct": 0.3, "requests_per_min": 6900},
+    "payments":  {"p95_latency_ms": 290,  "error_rate_pct": 0.8, "requests_per_min": 2600},
+    "inventory": {"p95_latency_ms": 90,   "error_rate_pct": 0.1, "queue_depth": 140}
+  },
+  "runbooks": {
+    "checkout":  "High p95 latency: check the latest deploy, then database connection pool saturation, then downstream payments latency.",
+    "payments":  "High error rate: check provider status page, recent config changes, and 5xx from the provider gateway.",
+    "inventory": "Queue depth growing: check consumer lag and consumer instance count; scale consumers before purging."
+  }
+}
