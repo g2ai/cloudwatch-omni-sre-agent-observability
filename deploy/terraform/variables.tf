@@ -15,3 +15,19 @@ variable "enable_workload" {
   type        = bool
   default     = false
 }
+variable "cache_mode" {
+  description = "telemetry-api data mode. fresh = healthy service, stale = the bad deploy (old cached data, HTTP 200)."
+  type        = string
+  default     = "fresh"
+
+  validation {
+    condition     = contains(["fresh", "stale"], var.cache_mode)
+    error_message = "cache_mode must be fresh or stale."
+  }
+}
+
+variable "adot_python_layer_arn" {
+  description = "AWS Lambda Layer for OpenTelemetry (Python), pinned per Region."
+  type        = string
+  default     = "arn:aws:lambda:ap-south-1:615299751070:layer:AWSOpenTelemetryDistroPython:29"
+}

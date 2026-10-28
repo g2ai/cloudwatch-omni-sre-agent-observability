@@ -32,3 +32,5 @@ dist/
 
 # OS
 Thumbs.db
+deploy/terraform/build/
+*.tfplan
