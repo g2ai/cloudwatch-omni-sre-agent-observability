@@ -31,3 +31,13 @@ variable "adot_python_layer_arn" {
   type        = string
   default     = "arn:aws:lambda:ap-south-1:615299751070:layer:AWSOpenTelemetryDistroPython:29"
 }
+variable "model_id" {
+  description = "Bedrock global inference profile ID for the agent."
+  type        = string
+  default     = "global.amazon.nova-2-lite-v1:0"
+
+  validation {
+    condition     = startswith(var.model_id, "global.")
+    error_message = "model_id must be a global inference profile (global.*); the IAM policy assumes it."
+  }
+}
