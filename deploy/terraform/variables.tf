@@ -15,6 +15,7 @@ variable "enable_workload" {
   type        = bool
   default     = false
 }
+
 variable "cache_mode" {
   description = "telemetry-api data mode. fresh = healthy service, stale = the bad deploy (old cached data, HTTP 200)."
   type        = string
@@ -31,6 +32,7 @@ variable "adot_python_layer_arn" {
   type        = string
   default     = "arn:aws:lambda:ap-south-1:615299751070:layer:AWSOpenTelemetryDistroPython:29"
 }
+
 variable "model_id" {
   description = "Bedrock global inference profile ID for the agent."
   type        = string
@@ -40,4 +42,16 @@ variable "model_id" {
     condition     = startswith(var.model_id, "global.")
     error_message = "model_id must be a global inference profile (global.*); the IAM policy assumes it."
   }
+}
+
+variable "omni_space_role_name" {
+  description = "IAM role the CloudWatch Omni space setup created (runs on-demand evaluations). Set yours from the space's IAM roles."
+  type        = string
+  default     = "CloudWatchOmniSpaceAccessRole-1793185621384"
+}
+
+variable "evaluation_role_name" {
+  description = "IAM role the CloudWatch Omni space setup created for evaluations (online evaluation execution role)."
+  type        = string
+  default     = "AgentCoreEvaluationRole-1793185621384"
 }
