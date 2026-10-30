@@ -2,7 +2,8 @@
 
 Tools read telemetry-api over its IAM-auth function URL, signed with SigV4.
 The ADOT Lambda layer traces the agent, model calls and outbound HTTP calls,
-so this file has no tracing code.
+so this file has no tracing code. Every request carries a session.id, which
+AgentCore online evaluation needs to group and score traces.
 """
 import base64
 import json
@@ -12,6 +13,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 import boto3
 from botocore.auth import SigV4Auth
@@ -31,6 +33,7 @@ SYSTEM_PROMPT = (
 
 ALERT_ID = re.compile(r"^ALR-\d{4}$")
 SERVICE = re.compile(r"^[a-z0-9-]{1,40}$")
+SESSION_ID = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 
 _session = boto3.Session()
 _model = BedrockModel(model_id=MODEL_ID, region_name=REGION, max_tokens=400)
@@ -91,11 +94,15 @@ def handler(event, context):
     if event.get("isBase64Encoded"):
         raw = base64.b64decode(raw).decode()
     try:
-        alert_id = json.loads(raw).get("alert_id", "")
+        body = json.loads(raw)
+        alert_id = body.get("alert_id", "")
+        session_id = body.get("session_id") or str(uuid.uuid4())
     except (ValueError, AttributeError):
         return _response(400, {"error": "body must be a JSON object"})
     if not ALERT_ID.match(alert_id):
         return _response(400, {"error": "alert_id must look like ALR-1234"})
+    if not SESSION_ID.match(session_id):
+        return _response(400, {"error": "session_id must be 8-64 letters, digits or hyphens"})
 
     # New Agent per request: Agent keeps conversation history.
     agent = Agent(
@@ -104,10 +111,12 @@ def handler(event, context):
         tools=[get_alert, get_metrics, get_runbook],
         system_prompt=SYSTEM_PROMPT,
         callback_handler=None,
+        trace_attributes={"session.id": session_id},
     )
     result = agent(f"Triage alert {alert_id}. What is wrong, and how fresh is the data?")
     return _response(200, {
         "alert_id": alert_id,
+        "session_id": session_id,
         "answer": str(result).strip(),
         "usage": result.metrics.accumulated_usage,
     })
