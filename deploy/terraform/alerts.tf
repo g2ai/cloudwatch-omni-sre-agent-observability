@@ -1,8 +1,15 @@
 # Alert email comes from TF_VAR_alert_email so it never lands in the repo.
+# Required whenever the workload is on: a missing email must fail the plan,
+# not silently destroy the alerting resources.
 variable "alert_email" {
   description = "Email for alarm notifications. Set TF_VAR_alert_email; do not commit it."
   type        = string
   default     = ""
+
+  validation {
+    condition     = !var.enable_workload || var.alert_email != ""
+    error_message = "enable_workload=true needs an alert email: set TF_VAR_alert_email before plan or apply."
+  }
 }
 
 variable "online_eval_config_id" {
@@ -12,7 +19,7 @@ variable "online_eval_config_id" {
 }
 
 locals {
-  alerts_on = var.enable_workload && var.alert_email != "" ? 1 : 0
+  alerts_on = var.enable_workload ? 1 : 0
 }
 
 resource "aws_sns_topic" "alerts" {
