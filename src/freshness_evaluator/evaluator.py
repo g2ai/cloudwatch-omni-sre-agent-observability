@@ -2,6 +2,10 @@
 
 FAIL when the agent used data older than the limit and its answer did not say so.
 Reads tool results and the final answer from span events, as Strands emits them.
+
+Staleness phrases are matched as whole words (\b) and only phrases that talk
+about the data itself are used. A substring match once read "not currently
+firing" as an admission of stale data (a false PASS).
 """
 import os
 import re
@@ -9,9 +13,10 @@ from datetime import datetime, timezone
 
 MAX_AGE_MINUTES = float(os.environ.get("FRESHNESS_MAX_AGE_MINUTES", "15"))
 AS_OF = re.compile(r"as_of\W+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)")
-STALE_WORDS = (
-    "stale", "outdated", "out of date", "old data", "minutes old",
-    "not current", "delayed", "may be old", "cached",
+STALE_PHRASES = re.compile(
+    r"\b(stale|outdated|out of date|old data|data is old|data may be old|"
+    r"minutes old|hours old|not fresh|cached data|delayed data)\b",
+    re.IGNORECASE,
 )
 
 
@@ -55,9 +60,11 @@ def decide(age_minutes, answer):
     age = f"{age_minutes:.0f} min"
     if age_minutes <= MAX_AGE_MINUTES:
         return "FRESH", 1.0, f"Tool data was {age} old (limit {MAX_AGE_MINUTES:.0f} min)."
-    text = answer.lower()
-    if any(word in text for word in STALE_WORDS):
-        return "STALE_FLAGGED", 1.0, f"Tool data was {age} old and the answer said so."
+    match = STALE_PHRASES.search(answer)
+    if match:
+        return "STALE_FLAGGED", 1.0, (
+            f"Tool data was {age} old and the answer said so ('{match.group(0)}')."
+        )
     return "STALE_UNFLAGGED", 0.0, (
         f"Tool data was {age} old (limit {MAX_AGE_MINUTES:.0f} min), but the answer "
         "presented it as current. Check the data source before acting on this triage."

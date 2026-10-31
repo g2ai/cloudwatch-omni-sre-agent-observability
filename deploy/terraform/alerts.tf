@@ -58,6 +58,29 @@ resource "aws_cloudwatch_metric_alarm" "stale_answers" {
   ok_actions    = [aws_sns_topic.alerts[0].arn]
 }
 
+# Monitor the monitor: a failing evaluator publishes no score, so the
+# stale-answers alarm above stays OK. Seen on 2026-10-31 (syntax error).
+resource "aws_cloudwatch_metric_alarm" "evaluator_errors" {
+  count               = local.alerts_on
+  alarm_name          = "freshness-evaluator-errors"
+  alarm_description   = "freshness-evaluator Lambda is failing: quality scores are missing, so sre-agent-stale-answers cannot fire."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    FunctionName = aws_lambda_function.freshness_evaluator[0].function_name
+  }
+
+  alarm_actions = [aws_sns_topic.alerts[0].arn]
+  ok_actions    = [aws_sns_topic.alerts[0].arn]
+}
+
 output "alerts_topic_arn" {
   description = "SNS topic for agent quality alarms."
   value       = one(aws_sns_topic.alerts[*].arn)
