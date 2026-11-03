@@ -1,59 +1,63 @@
 # Teardown
 
-Remove everything this build creates, in this order. Steps marked **verify before use** have not been run yet; check the AWS docs or `--help` first.
+Removes everything this build creates, in order. Items created outside Terraform come first, because they depend on resources Terraform will delete.
 
-Region: `ap-south-1`. CLI profile: `build04` (admin) and `build04-ro` (read-only checks).
+Cost while left running is close to zero (Lambda, SNS and alarms idle at about $0.20 per month), but the Omni space, X-Ray indexing at 100% and OTel enrichment should not be left on by accident.
 
-## 1. Stop paid activity first
+## 1. Stop the online evaluation and delete the evaluator (CLI and Omni UI)
 
-1. In CloudWatch Omni, disable every online evaluation configuration (Online evaluations).
-2. If the DevOps Agent integration is connected: Settings > Integrations > Amazon DevOps Agent > remove. Then delete the DevOps Agent agent space in the DevOps Agent console.
+The online evaluation locks the custom evaluator, so disable it first.
 
-## 2. Remove the workload
-
-```powershell
-Set-Location deploy\terraform
-terraform destroy
-```
-
-## 3. Remove Omni content
-
-1. Delete custom evaluators, datasets and saved experiments in Omni.
-2. Delete Omni alerts and dashboards created for this build.
-
-## 4. Revert account and Region settings changed for the lab
-
-X-Ray span indexing back to the 1% default:
+1. Omni web UI → Evaluate → Online evaluations → `sre_agent_quality` → disable, then delete.
+2. Delete the code-based evaluator:
 
 ```powershell
-aws xray update-indexing-rule --name Default --rule "Probabilistic={DesiredSamplingPercentage=1}" --profile build04
+aws bedrock-agentcore-control delete-evaluator --evaluator-id <EVALUATOR_ID> --profile <PROFILE>
+aws bedrock-agentcore-control list-evaluators --profile <PROFILE>
 ```
 
-OTel enrichment for AWS vended metrics (**verify before use**):
+3. Delete the online evaluation results log group:
 
 ```powershell
-aws cloudwatch stop-otel-enrichment --profile build04
-aws observabilityadmin stop-telemetry-enrichment --profile build04
+aws logs delete-log-group --log-group-name /aws/bedrock-agentcore/evaluations/results/<ONLINE_EVAL_CONFIG_ID> --profile <PROFILE>
 ```
 
-Transaction Search: keep it if other workloads use it. To stop sending spans to CloudWatch Logs, change the trace segment destination (**verify before use**).
+## 2. Destroy the Terraform workload
 
-## 5. Delete the Omni space and domain
-
-1. CloudWatch console > Settings > Omni > Space > Actions > delete the space.
-2. Then delete the account domain.
-3. Check that the roles created by setup are gone (`CloudWatchOmniSpaceAccessRole-*`, `AgentCoreEvaluationRole-*`), and the Dataset integration with its execution role. Delete any that remain (**verify before use**).
-
-## 6. Logs and local files
-
-1. Log group `aws/spans`: set retention or delete it.
-2. Delete local `.env`, `.omni/`, `.env.omni` and any test venv.
-
-## 7. Check
+The plan reads the agent package, so build it first. The alert email is required while the workload exists.
 
 ```powershell
-aws resourcegroupstaggingapi get-resources --tag-filters Key=build,Values=build-04 --profile build04-ro --query "ResourceTagMappingList[].ResourceARN"
-aws xray get-indexing-rules --profile build04-ro
+.\scripts\build_sre_agent.ps1
+$env:TF_VAR_alert_email = "<your-email>"
+terraform -chdir=deploy\terraform plan -destroy -var="enable_workload=true" -out="destroy.tfplan"
+terraform -chdir=deploy\terraform apply "destroy.tfplan"
 ```
 
-The first command should return an empty list. The second should show `DesiredSamplingPercentage` 1.0.
+This removes the three Lambda functions, their roles, log groups and function URLs, the SNS topic and subscription, both CloudWatch alarms, and the inline invoke policies added to the two Omni space roles. The space roles themselves are not touched.
+
+Verify:
+
+```powershell
+aws lambda list-functions --profile <PROFILE> --query "Functions[?contains(['telemetry-api','sre-agent','freshness-evaluator'], FunctionName)].FunctionName"
+```
+
+The result must be empty.
+
+## 3. Revert account-level settings changed for the lab
+
+| Setting | Lab value | Revert |
+|---|---|---|
+| X-Ray indexing rule `Default` | 100% | Back to 1% (CloudWatch console → Settings → X-Ray traces → Indexing) |
+| OTel enrichment for AWS vended metrics | On | Turn off if nothing else uses it |
+| Log group `aws/spans` | Retention not set | Set retention or delete |
+| Transaction Search | Active | Keep if other workloads use it |
+
+## 4. Delete the CloudWatch Omni space and domain
+
+CloudWatch console → Omni → delete the space, then the domain. This also removes the space roles created by setup. Check IAM afterwards for leftover roles with the space suffix.
+
+## 5. Local cleanup
+
+- Delete `deploy/terraform/terraform.tfstate*` after a successful destroy (it contains the alert email).
+- Delete `deploy/terraform/build/`.
+- Delete the spike virtual environment if you created one.

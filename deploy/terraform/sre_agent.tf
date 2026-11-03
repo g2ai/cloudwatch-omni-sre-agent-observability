@@ -3,6 +3,9 @@ locals {
   sre_agent_on     = var.enable_workload ? 1 : 0
   nova_model_name  = trimprefix(var.model_id, "global.")
   nova_profile_arn = "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/${var.model_id}"
+  # Built as a string, not read from the resource, so a telemetry-api update
+  # does not defer this policy to apply time and show a phantom change.
+  telemetry_api_arn = "arn:aws:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:${local.telemetry_api_name}"
 }
 
 # Built by scripts/build_sre_agent.ps1. Gated so a plan without the build folder still works.
@@ -80,7 +83,7 @@ data "aws_iam_policy_document" "sre_agent" {
   statement {
     sid       = "TelemetryApiUrlOnly"
     actions   = ["lambda:InvokeFunctionUrl"]
-    resources = [aws_lambda_function.telemetry_api[0].arn]
+    resources = [local.telemetry_api_arn]
     condition {
       test     = "StringEquals"
       variable = "lambda:FunctionUrlAuthType"
@@ -91,7 +94,7 @@ data "aws_iam_policy_document" "sre_agent" {
   statement {
     sid       = "TelemetryApiInvokeViaUrl"
     actions   = ["lambda:InvokeFunction"]
-    resources = [aws_lambda_function.telemetry_api[0].arn]
+    resources = [local.telemetry_api_arn]
     condition {
       test     = "Bool"
       variable = "lambda:InvokedViaFunctionUrl"
