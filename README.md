@@ -94,12 +94,16 @@ The agent needs Linux wheels. `uv` resolves them for Lambda from Windows, and th
 
 ### 3. Deploy
 
-Set the Omni space role names from your space (IAM console, roles created by the space setup), and the alert email. The plan fails if the email is missing while the workload is on.
+Account-specific values go in `deploy/terraform/terraform.tfvars`, which is gitignored. Copy the example and fill in your profile and the two IAM roles your Omni space setup created (IAM console, roles starting with `CloudWatchOmniSpaceAccessRole-` and `AgentCoreEvaluationRole-`). Leave `online_eval_config_id` empty for now.
 
 ```powershell
-$env:TF_VAR_aws_profile = "<PROFILE>"
-$env:TF_VAR_omni_space_role_name = "<CloudWatchOmniSpaceAccessRole-...>"
-$env:TF_VAR_evaluation_role_name = "<AgentCoreEvaluationRole-...>"
+Copy-Item deploy\terraform\terraform.tfvars.example deploy\terraform\terraform.tfvars
+notepad deploy\terraform\terraform.tfvars
+```
+
+The alert email is set in the shell, not in a file. The plan fails if it is missing while the workload is on. Plan output shows the email, so do not paste full plans in public places.
+
+```powershell
 $env:TF_VAR_alert_email = "<your-email>"
 terraform -chdir=deploy\terraform init
 terraform -chdir=deploy\terraform plan -var="enable_workload=true" -out="build.tfplan"
@@ -118,7 +122,7 @@ aws bedrock-agentcore-control create-evaluator --evaluator-name freshness_evalua
 
 ### 5. Create the online evaluation
 
-In the Omni web UI: Evaluate → Online evaluations → Create online evaluation. Agent `sre-agent`, evaluators `freshness_evaluator` and Helpfulness, sampling 100%, session timeout 1 minute, execution role `AgentCoreEvaluationRole-...`. Put its ID in `TF_VAR_online_eval_config_id` and apply again so the alarm watches the right metric dimension.
+In the Omni web UI: Evaluate → Online evaluations → Create online evaluation. Agent `sre-agent`, evaluators `freshness_evaluator` and Helpfulness, sampling 100%, session timeout 1 minute, execution role `AgentCoreEvaluationRole-...`. Put its ID in `online_eval_config_id` in `terraform.tfvars` and apply again. That creates the stale-answers alarm on the right metric dimension.
 
 ### 6. Check the path
 
