@@ -1,4 +1,7 @@
-"""POST an alert to the sre-agent function URL, signed with SigV4."""
+"""POST an alert to the sre-agent function URL, signed with SigV4.
+
+Usage: python scripts/invoke_agent.py <url> <alert_id> [prompt_version] [profile]
+"""
 import json
 import sys
 import time
@@ -10,8 +13,11 @@ from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 
 
-def invoke(url, alert_id, session):
-    body = json.dumps({"alert_id": alert_id})
+def invoke(url, alert_id, session, prompt_version=None):
+    payload = {"alert_id": alert_id}
+    if prompt_version:
+        payload["prompt_version"] = prompt_version
+    body = json.dumps(payload)
     signed = AWSRequest(method="POST", url=url, data=body,
                         headers={"content-type": "application/json"})
     creds = session.get_credentials().get_frozen_credentials()
@@ -29,11 +35,12 @@ def invoke(url, alert_id, session):
 
 def main():
     if len(sys.argv) < 3:
-        sys.exit("usage: invoke_agent.py <url> <alert_id> [profile]")
+        sys.exit("usage: invoke_agent.py <url> <alert_id> [prompt_version] [profile]")
     url, alert_id = sys.argv[1], sys.argv[2]
-    profile = sys.argv[3] if len(sys.argv) > 3 else "build04"
+    prompt_version = sys.argv[3] if len(sys.argv) > 3 else None
+    profile = sys.argv[4] if len(sys.argv) > 4 else "build04"
     session = boto3.Session(profile_name=profile)
-    status, text, seconds = invoke(url, alert_id, session)
+    status, text, seconds = invoke(url, alert_id, session, prompt_version)
     print(f"{status} in {seconds:.1f}s")
     try:
         print(json.dumps(json.loads(text), indent=2))

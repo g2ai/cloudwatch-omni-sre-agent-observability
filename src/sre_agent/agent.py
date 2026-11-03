@@ -4,6 +4,12 @@ Tools read telemetry-api over its IAM-auth function URL, signed with SigV4.
 The ADOT Lambda layer traces the agent, model calls and outbound HTTP calls,
 so this file has no tracing code. Every request carries a session.id, which
 AgentCore online evaluation needs to group and score traces.
+
+Two system prompts are kept side by side for the v1 vs v2 experiment:
+  v1 - the original prompt; it reports stale data as fresh.
+  v2 - adds the current time and a freshness rule.
+The version is chosen per request, so both run against the same deployment
+and the same data at the same time.
 """
 import base64
 import json
@@ -14,6 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import datetime, timezone
 
 import boto3
 from botocore.auth import SigV4Auth
@@ -24,11 +31,21 @@ from strands.models import BedrockModel
 TELEMETRY_API_URL = os.environ.get("TELEMETRY_API_URL", "")
 MODEL_ID = os.environ.get("MODEL_ID", "global.amazon.nova-2-lite-v1:0")
 REGION = os.environ.get("AWS_REGION", "ap-south-1")
+DEFAULT_PROMPT_VERSION = os.environ.get("PROMPT_VERSION", "v1")
 
-# v1 prompt from the spike, kept on purpose: it reports stale data as fresh.
-SYSTEM_PROMPT = (
+PROMPT_V1 = (
     "You are an SRE triage assistant. Always use tools for facts. "
     "Quote the values you used and their as_of time."
+)
+
+PROMPT_V2 = (
+    "You are an SRE triage assistant. Always use tools for facts. "
+    "Quote the values you used and their as_of time. "
+    "The current time is {now} UTC. Before you judge an alert, compare every "
+    "as_of time with the current time. If any data is older than 15 minutes, "
+    "say clearly that the data is stale and give its age in minutes. Do not "
+    "conclude that an alert is resolved or that a service is healthy from "
+    "stale data; say that fresh data is needed before acting."
 )
 
 ALERT_ID = re.compile(r"^ALR-\d{4}$")
@@ -37,6 +54,13 @@ SESSION_ID = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 
 _session = boto3.Session()
 _model = BedrockModel(model_id=MODEL_ID, region_name=REGION, max_tokens=400)
+
+
+def _system_prompt(version):
+    if version == "v2":
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        return PROMPT_V2.format(now=now)
+    return PROMPT_V1
 
 
 def _get(path):
@@ -96,11 +120,14 @@ def handler(event, context):
     try:
         body = json.loads(raw)
         alert_id = body.get("alert_id", "")
-        session_id = body.get("session_id") or str(uuid.uuid4())
+        version = body.get("prompt_version") or DEFAULT_PROMPT_VERSION
+        session_id = body.get("session_id") or f"{version}-{uuid.uuid4()}"
     except (ValueError, AttributeError):
         return _response(400, {"error": "body must be a JSON object"})
     if not ALERT_ID.match(alert_id):
         return _response(400, {"error": "alert_id must look like ALR-1234"})
+    if version not in ("v1", "v2"):
+        return _response(400, {"error": "prompt_version must be v1 or v2"})
     if not SESSION_ID.match(session_id):
         return _response(400, {"error": "session_id must be 8-64 letters, digits or hyphens"})
 
@@ -109,13 +136,14 @@ def handler(event, context):
         name="sre-agent",
         model=_model,
         tools=[get_alert, get_metrics, get_runbook],
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=_system_prompt(version),
         callback_handler=None,
-        trace_attributes={"session.id": session_id},
+        trace_attributes={"session.id": session_id, "prompt.version": version},
     )
     result = agent(f"Triage alert {alert_id}. What is wrong, and how fresh is the data?")
     return _response(200, {
         "alert_id": alert_id,
+        "prompt_version": version,
         "session_id": session_id,
         "answer": str(result).strip(),
         "usage": result.metrics.accumulated_usage,
@@ -124,9 +152,10 @@ def handler(event, context):
 
 if __name__ == "__main__":
     alert = sys.argv[1] if len(sys.argv) > 1 else "ALR-1001"
+    version = sys.argv[2] if len(sys.argv) > 2 else "v1"
     fake_event = {
         "requestContext": {"http": {"method": "POST"}},
-        "body": json.dumps({"alert_id": alert}),
+        "body": json.dumps({"alert_id": alert, "prompt_version": version}),
     }
     out = handler(fake_event, None)
     print(out["statusCode"])
