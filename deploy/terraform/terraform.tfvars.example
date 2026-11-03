@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars (gitignored) and fill in your values.
+# The alert email is not here: set TF_VAR_alert_email in your shell.
+
+aws_profile          = "<your-sso-profile>"
+omni_space_role_name = "<CloudWatchOmniSpaceAccessRole-...>"
+evaluation_role_name = "<AgentCoreEvaluationRole-...>"
+
+# Leave empty for the first apply. After you create the online evaluation in
+# the Omni UI, put its ID here and apply again to create the alarm.
+online_eval_config_id = ""

@@ -5,9 +5,9 @@ variable "region" {
 }
 
 variable "aws_profile" {
-  description = "AWS CLI profile (SSO) used by Terraform."
+  description = "AWS CLI profile (SSO) used by Terraform. Null uses AWS_PROFILE or the default credential chain."
   type        = string
-  default     = "build04"
+  default     = null
 }
 
 variable "enable_workload" {
@@ -44,14 +44,26 @@ variable "model_id" {
   }
 }
 
+# Account-specific values live in terraform.tfvars (gitignored).
+# See terraform.tfvars.example.
 variable "omni_space_role_name" {
-  description = "IAM role the CloudWatch Omni space setup created (runs on-demand evaluations). Set yours from the space's IAM roles."
+  description = "IAM role created by your CloudWatch Omni space setup (CloudWatchOmniSpaceAccessRole-...). Runs on-demand evaluations."
   type        = string
-  default     = "CloudWatchOmniSpaceAccessRole-1793185621384"
+  default     = ""
+
+  validation {
+    condition     = !var.enable_workload || var.omni_space_role_name != ""
+    error_message = "Set omni_space_role_name in terraform.tfvars (see terraform.tfvars.example)."
+  }
 }
 
 variable "evaluation_role_name" {
-  description = "IAM role the CloudWatch Omni space setup created for evaluations (online evaluation execution role)."
+  description = "IAM role created by your CloudWatch Omni space setup for online evaluations (AgentCoreEvaluationRole-...)."
   type        = string
-  default     = "AgentCoreEvaluationRole-1793185621384"
+  default     = ""
+
+  validation {
+    condition     = !var.enable_workload || var.evaluation_role_name != ""
+    error_message = "Set evaluation_role_name in terraform.tfvars (see terraform.tfvars.example)."
+  }
 }

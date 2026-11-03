@@ -5,7 +5,7 @@ provider "aws" {
   default_tags {
     tags = {
       build      = "build-04"
-      project    = "cloudwatch-omni-agent-app-observability"
+      project    = "cloudwatch-omni-sre-agent-observability"
       managed-by = "terraform"
     }
   }

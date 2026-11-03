@@ -1,4 +1,4 @@
-# Alert email comes from TF_VAR_alert_email so it never lands in the repo.
+# Alert email comes from TF_VAR_alert_email so it never lands in a file.
 # Required whenever the workload is on: a missing email must fail the plan,
 # not silently destroy the alerting resources.
 variable "alert_email" {
@@ -12,14 +12,17 @@ variable "alert_email" {
   }
 }
 
+# Created in the Omni UI after the first apply; set it in terraform.tfvars and
+# apply again to create the stale-answers alarm.
 variable "online_eval_config_id" {
-  description = "AgentCore online evaluation config ID (created in the Omni UI)."
+  description = "AgentCore online evaluation config ID (created in the Omni UI). Empty until it exists."
   type        = string
-  default     = "sre_agent_quality-qac2opE5ov"
+  default     = ""
 }
 
 locals {
-  alerts_on = var.enable_workload ? 1 : 0
+  alerts_on      = var.enable_workload ? 1 : 0
+  stale_alarm_on = var.enable_workload && var.online_eval_config_id != "" ? 1 : 0
 }
 
 resource "aws_sns_topic" "alerts" {
@@ -37,7 +40,7 @@ resource "aws_sns_topic_subscription" "alert_email" {
 # Fires when any sampled trace in 5 minutes used stale data and did not say so.
 # Minimum, not Average: one wrong answer must not hide among good ones.
 resource "aws_cloudwatch_metric_alarm" "stale_answers" {
-  count               = local.alerts_on
+  count               = local.stale_alarm_on
   alarm_name          = "sre-agent-stale-answers"
   alarm_description   = "sre-agent answered with stale data presented as current (freshness_evaluator < 1)."
   namespace           = "Bedrock-AgentCore/Evaluations"
@@ -59,7 +62,7 @@ resource "aws_cloudwatch_metric_alarm" "stale_answers" {
 }
 
 # Monitor the monitor: a failing evaluator publishes no score, so the
-# stale-answers alarm above stays OK. Seen on 2026-10-31 (syntax error).
+# stale-answers alarm above stays OK.
 resource "aws_cloudwatch_metric_alarm" "evaluator_errors" {
   count               = local.alerts_on
   alarm_name          = "freshness-evaluator-errors"
