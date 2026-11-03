@@ -1,0 +1,220 @@
+# Zero errors, wrong answers: catching stale data behind an AI agent with CloudWatch Omni
+
+A reference build that shows a failure classic monitoring cannot see. An SRE triage agent calls a telemetry service. A bad deploy makes the service return old data with HTTP 200 and lower latency. Every dashboard stays green, and the agent tells the on-call engineer the incident is over:
+
+> "The current value is 610 ms, which is below the threshold of 800 ms … The data is very fresh … The measurement was taken moments ago."
+
+The data was 96 minutes old.
+
+This repo builds the agent and the service on AWS Lambda, traces both into one trace with OpenTelemetry, scores every answer with a custom freshness evaluator in Amazon CloudWatch Omni, alarms on the score, compares the Omni agent's root cause analysis with CloudTrail ground truth, and proves a prompt fix with an A/B experiment on live traffic.
+
+## What this build shows
+
+- **One trace across agent and service.** The agent's tool call carries `traceparent` over a SigV4-signed HTTP request, so the agent span and the service span share a trace ID. The Omni application map shows `sre-agent` (Agent) calling `telemetry-api` (Service).
+- **The failure is in the dependency, not the agent.** The bad deploy is one Terraform variable (`cache_mode=stale`). The service returns a 95-minute-old snapshot. It also gets 120 ms faster, because the stale path skips the query.
+- **Built-in evaluators miss it.** The built-in Helpfulness judge rated 4 of 6 stale answers "Very Helpful".
+- **A code-based evaluator catches it.** `freshness_evaluator` compares the tool result's `as_of` time with the time the agent received it, and fails the trace when old data is presented as current.
+- **Alerting that survives its own failure.** One alarm on the evaluator score, and a second alarm on the evaluator Lambda's errors, because a broken evaluator publishes no score and the first alarm stays green.
+- **AI investigation measured against ground truth.** The Omni agent found the symptom and the missing freshness telemetry. It could not find the deploy, because it has no CloudTrail tool. CloudTrail had the answer.
+- **The fix is measured, not assumed.** v1 and v2 prompts run against the same deployment and the same stale data. v2 passes 7 of 7 stale cases; v1 passes 0 of 6.
+
+## Architecture
+
+```mermaid
+flowchart TB
+  T[traffic.py<br/>SigV4 POST, cap 30] --> A
+  L[service_load.py<br/>SigV4 GET, no tokens] --> S
+  A[sre-agent Lambda<br/>Strands + Nova 2 Lite<br/>ADOT layer] -->|SigV4 GET + traceparent| S[telemetry-api Lambda<br/>CACHE_MODE fresh or stale]
+  A --> B[Amazon Bedrock<br/>global inference profile]
+  A --> X[X-Ray OTLP endpoint<br/>aws/spans]
+  S --> X
+  X --> O[CloudWatch Omni<br/>map, traces, Omni agent]
+```
+
+```mermaid
+flowchart TB
+  SP[aws/spans<br/>spans with session.id] --> OE[AgentCore online evaluation<br/>100% sampling]
+  OE --> FE[freshness-evaluator Lambda<br/>code-based]
+  OE --> HE[Builtin.Helpfulness<br/>LLM judge]
+  FE --> R[Results log group + metric<br/>Bedrock-AgentCore/Evaluations]
+  HE --> R
+  R --> A1[Alarm: sre-agent-stale-answers<br/>Minimum below 1 in 5 min]
+  FE -. Lambda Errors .-> A2[Alarm: freshness-evaluator-errors]
+  A1 --> N[SNS email]
+  A2 --> N
+```
+
+| Component | What it is | Where |
+|---|---|---|
+| `src/sre_agent/agent.py` | Strands agent, three tools, per-request `session.id` and `prompt_version` | Lambda, 1024 MB, ADOT layer |
+| `src/telemetry_api/handler.py` | Synthetic alerts, metrics and runbooks; `CACHE_MODE` switches fresh and stale | Lambda, 256 MB, ADOT layer, Application Signals |
+| `src/freshness_evaluator/evaluator.py` | AgentCore code-based evaluator, Python stdlib only | Lambda, 256 MB, no tracing |
+| `deploy/terraform/` | All AWS resources behind `enable_workload` (default `false`) | ap-south-1 |
+| `scripts/` | Package build, SigV4 helpers, capped traffic and load, experiment report, local evaluator tests | Your machine |
+
+## Prerequisites and cost
+
+- An AWS account with a CloudWatch Omni domain and space in the Region you deploy to (this build used ap-south-1). Transaction Search is enabled by the space setup.
+- Amazon Bedrock access to `global.amazon.nova-2-lite-v1:0`.
+- Windows PowerShell 5.1 (the commands below), AWS CLI v2 with an SSO profile, Terraform 1.15 or later, Python 3.13 and `uv`.
+- An email address for alarm notifications.
+
+| Item | Cost in this build |
+|---|---|
+| Amazon Bedrock AgentCore (evaluations) | $0.19 |
+| Amazon Bedrock (Nova 2 Lite, about 70 agent runs) | $0.06 |
+| CloudWatch (logs, spans, alarms; Omni queries inside the free allowance) | $0.005 |
+| Lambda, SNS | $0 (free tier) |
+| **Total, 28 Oct to 3 Nov 2026** | **about $0.25** |
+
+Evaluation cost was 3.4 times the model cost. In production, sample online evaluation (for example 5 to 10%) instead of 100%.
+
+## Quickstart
+
+### 1. Clone and prepare
+
+```powershell
+git clone https://github.com/g2ai/cloudwatch-omni-sre-agent-observability.git
+cd cloudwatch-omni-sre-agent-observability
+python -m venv .venv
+Set-ExecutionPolicy -Scope Process RemoteSigned
+.\.venv\Scripts\Activate.ps1
+python -m pip install boto3 uv
+aws sso login --profile <PROFILE>
+$env:AWS_PROFILE = "<PROFILE>"
+```
+
+### 2. Build the agent package
+
+The agent needs Linux wheels. `uv` resolves them for Lambda from Windows, and the script removes OpenTelemetry and `wrapt`, which the ADOT layer provides.
+
+```powershell
+.\scripts\build_sre_agent.ps1
+```
+
+### 3. Deploy
+
+Set the Omni space role names from your space (IAM console, roles created by the space setup), and the alert email. The plan fails if the email is missing while the workload is on.
+
+```powershell
+$env:TF_VAR_aws_profile = "<PROFILE>"
+$env:TF_VAR_omni_space_role_name = "<CloudWatchOmniSpaceAccessRole-...>"
+$env:TF_VAR_evaluation_role_name = "<AgentCoreEvaluationRole-...>"
+$env:TF_VAR_alert_email = "<your-email>"
+terraform -chdir=deploy\terraform init
+terraform -chdir=deploy\terraform plan -var="enable_workload=true" -out="build.tfplan"
+terraform -chdir=deploy\terraform apply "build.tfplan"
+```
+
+Confirm the SNS subscription from the email you receive.
+
+### 4. Register the freshness evaluator
+
+```powershell
+$arn = terraform -chdir=deploy\terraform output -raw freshness_evaluator_arn
+@{ codeBased = @{ lambdaConfig = @{ lambdaArn = $arn; lambdaTimeoutInSeconds = 30 } } } | ConvertTo-Json -Depth 5 | Out-File -Encoding ascii deploy\terraform\build\evaluator-config.json
+aws bedrock-agentcore-control create-evaluator --evaluator-name freshness_evaluator --level TRACE --evaluator-config file://deploy/terraform/build/evaluator-config.json
+```
+
+### 5. Create the online evaluation
+
+In the Omni web UI: Evaluate → Online evaluations → Create online evaluation. Agent `sre-agent`, evaluators `freshness_evaluator` and Helpfulness, sampling 100%, session timeout 1 minute, execution role `AgentCoreEvaluationRole-...`. Put its ID in `TF_VAR_online_eval_config_id` and apply again so the alarm watches the right metric dimension.
+
+### 6. Check the path
+
+```powershell
+$agent = terraform -chdir=deploy\terraform output -raw sre_agent_url
+python scripts\invoke_agent.py $agent ALR-1001
+```
+
+Expected: HTTP 200, value 1840 ms, `as_of` close to now. Within about 10 minutes the trace appears in Omni Agent traces with a `freshness_evaluator` score of 1.00.
+
+## Demo scenarios
+
+| # | Scenario | Commands | What you see |
+|---|---|---|---|
+| 1 | Baseline | `python scripts\service_load.py $api --requests 600 --rate 2` and `python scripts\traffic.py $agent --runs 3` | Map node coloured (needs 100 or more requests), freshness 1.00 |
+| 2 | Bad deploy | `terraform ... plan -var="enable_workload=true" -var="cache_mode=stale"`, then apply | No errors, latency down about 120 ms, map still green |
+| 3 | Wrong answers | `python scripts\traffic.py $agent --runs 6 --prompt-version v1` | Answers call 95-minute-old data current; freshness 0.00; alarm fires |
+| 4 | Fix, measured | `python scripts\traffic.py $agent --runs 6 --prompt-version v2`, then `python scripts\experiment_report.py --minutes 40` | v2 flags the stale data; freshness 1.00 |
+| 5 | Rollback | `-var="cache_mode=fresh"`, then apply | Freshness back to FRESH; alarm OK |
+
+`$api` is `terraform -chdir=deploy\terraform output -raw telemetry_api_url`.
+
+## Results
+
+### v1 vs v2 on the same stale data
+
+| | v1 (original prompt) | v2 (current time + freshness rule) |
+|---|---|---|
+| Freshness, stale cases | 0 / 6 | 7 / 7 |
+| Freshness, fresh control | 3 / 3 | 4 / 4 (no false alarms) |
+| Helpfulness judge, average | 0.74 | 0.52 |
+| Tokens per run | about 2,420 | about 2,620 (+8%) |
+
+The v2 answer on stale data: "The data is 1 hour and 35 minutes old … Because the data is stale, I cannot confirm the ongoing state of this metric. Fresh data is needed before concluding whether the alert is truly resolved."
+
+The built-in Helpfulness judge scored the confident wrong answers higher than the honest one. A release gate on Helpfulness alone would have shipped v1.
+
+### Omni agent investigation vs ground truth
+
+The Omni agent was given the symptom only (no mention of a deploy). Without the AWS DevOps Agent connected, it investigated on its own.
+
+| Finding | Result |
+|---|---|
+| Service returned old data with 200 and sub-second latency, so everything looked healthy | Correct |
+| Only the freshness evaluator caught it; the data source has no freshness telemetry | Correct |
+| Next step: check CloudTrail for configuration changes | Correct direction |
+| Cause: "writes stopped" in a data store | Wrong. `as_of` moved with each request (7 seconds apart for requests 7 seconds apart); the service was serving a stale view after a deploy |
+| CloudTrail "unavailable" | The Omni agent has no CloudTrail tool. CloudTrail showed both `UpdateFunctionConfiguration` events |
+| Onset at alarm time, self-recovery | Wrong. Onset was 17 hours earlier; recovery was the rollback |
+
+Alarm time is detection time, not onset. The investigator anchored on the time in the question.
+
+## Screenshots
+
+Place scrubbed images in `docs/images/`.
+
+| Image | Shows |
+|---|---|
+| `agent-trace-cross-service.png` | One trace: agent → model → tool → telemetry-api → handler |
+| `app-map-edge.png` | sre-agent (Agent) → telemetry-api (Service) and Nova |
+| `v1-v2-traces.png` | 0% errors, v1 traces at 0.00 and v2 traces at 1.00 |
+| `omni-agent-rca.png` | Omni agent root cause panel |
+| `alarm-email.png` | ALARM notification |
+
+## What I learned
+
+- **Online evaluation needs `session.id`.** Without it, nothing was scored for 11 hours. Strands sets it with `trace_attributes`.
+- **A false PASS is worse than a false FAIL.** The first keyword check read "not currently firing" as an admission of stale data. Phrases now match whole words only, with a regression test.
+- **A broken evaluator is silent.** A truncated file reached Lambda. No scores meant missing data, and the quality alarm stayed OK. The second alarm watches evaluator errors.
+- **Terraform can destroy by omission.** A plan run from a terminal without the email variable removed the alerting resources. A cross-variable validation now fails the plan instead.
+- **Build Lambda packages for Linux on Windows with `uv`.** `pip --platform` evaluates environment markers on the host and fails on `pywin32`.
+- **Global inference profiles need three IAM statements.** A condition key that is absent from the request makes `StringEquals` false.
+- **The model is bad at time arithmetic.** It called a 2-second difference "2 minutes". Keep freshness checks in code.
+
+## Limitations
+
+- The freshness evaluator uses phrase matching to decide whether an answer admitted stale data. v2 uses the word "stale", which the evaluator looks for, so answers were also read by hand. A model-as-judge freshness evaluator would be the next step.
+- Helpfulness averages include the fresh control runs. Samples are small (6 to 7 runs per version).
+- `treat_missing_data = notBreaching` returns the alarm to OK when traffic stops, even while the bad deploy is still live.
+- The SNS topic is not encrypted: an AWS-managed SNS key blocks CloudWatch alarm notifications. Use a customer managed key in production.
+- Synthetic data. One Region, one account.
+- The evaluator and the online evaluation are created outside Terraform.
+
+## Teardown
+
+See [docs/teardown.md](docs/teardown.md). Disable the online evaluation and delete the evaluator first, then destroy the Terraform workload.
+
+## References
+
+- [CloudWatch Omni user guide](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/cloudwatch-omni.html)
+- [Send AI agent telemetry](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/omni-send-ai-agent-telemetry.html)
+- [Tutorial: Fix a production quality regression](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/omni-agents-close-the-loop.html)
+- [AgentCore code-based evaluators](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-based-evaluators.html)
+- [AWS Distro for OpenTelemetry Lambda layers](https://aws-otel.github.io/docs/getting-started/lambda)
+- [Bedrock global cross-Region inference IAM](https://docs.aws.amazon.com/bedrock/latest/userguide/global-cross-region-inference.html)
+
+## License
+
+MIT
