@@ -60,6 +60,10 @@ A plain-language walkthrough of the architecture is in [docs/architecture.md](do
 
 In one sentence: a test script asks the agent about an alert, the agent asks the model and calls a telemetry service, both report traces to CloudWatch, and every answer is scored and alarmed on. The step-by-step version is in [docs/architecture.md](docs/architecture.md).
 
+![Architecture: one request becomes one trace, every answer is scored, and the score is alarmed on](docs/images/00-architecture.png)
+
+The same flow as Mermaid source, split into the request path and the evaluation path:
+
 ```mermaid
 flowchart TB
   T[traffic.py<br/>SigV4 POST, cap 30] --> A
@@ -180,7 +184,7 @@ Expected: HTTP 200, value 1840 ms, `as_of` close to now. Within about 10 minutes
 | 1 | Baseline | `python scripts\service_load.py $api --requests 600 --rate 2` and `python scripts\traffic.py $agent --runs 3` | Map node coloured (needs 100 or more requests), freshness 1.00 |
 | 2 | Bad deploy | `terraform ... plan -var="enable_workload=true" -var="cache_mode=stale"`, then apply | No errors, latency down about 120 ms, map still green |
 | 3 | Wrong answers | `python scripts\traffic.py $agent --runs 6 --prompt-version v1` | Answers call 95-minute-old data current; freshness 0.00; alarm fires |
-| 4 | Fix, measured | `python scripts\traffic.py $agent --runs 6 --prompt-version v2`, then `python scripts\experiment_report.py --minutes 40` | v2 flags the stale data; freshness 1.00 |
+| 4 | Fix, measured | `python scripts\traffic.py $agent --runs 6 --prompt-version v2`, then `python scripts\experiment_report.py --config-id <id> --minutes 40` | v2 flags the stale data; freshness 1.00 |
 | 5 | Rollback | `-var="cache_mode=fresh"`, then apply | Freshness back to FRESH; alarm OK |
 
 `$api` is `terraform -chdir=deploy\terraform output -raw telemetry_api_url`.
