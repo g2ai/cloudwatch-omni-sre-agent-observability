@@ -1,23 +1,28 @@
 """Summarize online evaluation results by prompt version (session.id prefix v1- / v2-).
 
-Usage: python scripts/experiment_report.py [--minutes N] [--profile P]
+Usage: python scripts/experiment_report.py --config-id <online-eval-config-id> [--minutes N] [--profile P]
+The config ID can also come from ONLINE_EVAL_CONFIG_ID.
 """
 import argparse
 import collections
 import json
+import os
 import time
 
 import boto3
 
-LOG_GROUP = "/aws/bedrock-agentcore/evaluations/results/sre_agent_quality-qac2opE5ov"
+LOG_GROUP = "/aws/bedrock-agentcore/evaluations/results/{}"
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--minutes", type=int, default=60)
     parser.add_argument("--profile", default="build04-ro")
-    parser.add_argument("--log-group", default=LOG_GROUP)
+    parser.add_argument("--config-id", default=os.environ.get("ONLINE_EVAL_CONFIG_ID"))
     args = parser.parse_args()
+    if not args.config_id:
+        parser.error("set --config-id or ONLINE_EVAL_CONFIG_ID")
+    log_group = LOG_GROUP.format(args.config_id)
 
     logs = boto3.Session(profile_name=args.profile).client("logs")
     start = int((time.time() - args.minutes * 60) * 1000)
@@ -25,7 +30,7 @@ def main():
     scores = collections.defaultdict(list)
 
     paginator = logs.get_paginator("filter_log_events")
-    for page in paginator.paginate(logGroupName=args.log_group, startTime=start):
+    for page in paginator.paginate(logGroupName=log_group, startTime=start):
         for event in page["events"]:
             record = json.loads(event["message"])
             attrs = record.get("attributes", {})

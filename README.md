@@ -8,6 +8,44 @@ The data was 96 minutes old.
 
 This repo builds the agent and the service on AWS Lambda, traces both into one trace with OpenTelemetry, scores every answer with a custom freshness evaluator in Amazon CloudWatch Omni, alarms on the score, compares the Omni agent's root cause analysis with CloudTrail ground truth, and proves a prompt fix with an A/B experiment on live traffic.
 
+![v1 and v2 traces: zero errors, freshness 0.00 for v1 and 1.00 for v2](docs/images/03-v1-vs-v2-traces.png)
+
+## In plain words
+
+Think of a new on-call engineer who reads a monitoring dashboard to decide whether an incident is over. If the dashboard quietly shows numbers from an hour ago, the engineer will confidently say "all good" and close the incident. Nothing crashed. Nobody got an error. The answer was still wrong.
+
+An AI agent has the same weakness. It trusts whatever its tools return. Classic monitoring checks whether services are up, fast and error free, so it stays green. What it does not check is whether the agent's answer was true.
+
+This build adds that missing check:
+
+1. **Trace the agent and the services it calls together**, so one trace shows the question, the model calls, the tool call and the service that answered it.
+2. **Score every answer with a rule you can explain in one sentence**: "if the data is older than 15 minutes, the answer must say so." The rule runs as code, not as another model's opinion.
+3. **Alarm on the score**, and alarm on the scorer itself, because a broken checker is silent.
+4. **Fix the agent and measure the fix** on the same live traffic before and after.
+
+### Where this pattern applies
+
+Any agent that answers from data it fetches at run time can be confidently wrong when that data is stale, cached or partial:
+
+| Industry | Agent | Stale data risk |
+|---|---|---|
+| IT operations | On-call copilot reading alerts and metrics | Closes a live incident based on an old snapshot |
+| E-commerce and logistics | Support agent reading order and shipment status | Tells a customer an order shipped when it did not |
+| Financial services | Assistant reading balances, prices or limits | Quotes a cached price or an old balance as current |
+| Travel and hospitality | Booking agent reading seat or room availability | Confirms availability that is gone |
+| Healthcare operations | Scheduling agent reading appointment slots | Offers a slot that was already taken |
+
+The same three pieces carry over: put an `as_of` time in every tool response, score answers with a code evaluator that compares it with the time the answer was given, and alarm on that score.
+
+### How it scales
+
+- **Sample instead of scoring everything.** Here online evaluation scored 100% of a few dozen traces, and evaluation still cost 3.4 times the model. At production volume, score 5 to 10% and raise the rate for new releases.
+- **One evaluator, many agents.** The freshness evaluator reads standard OpenTelemetry span events, so any agent that returns `as_of` in its tool results can use it unchanged.
+- **Many accounts, one view.** CloudWatch Omni reads a centralized monitoring account, so agents and services in different accounts and Regions appear in one map and one set of alarms.
+- **Gate releases on the domain score, not on a general judge.** In this build the general Helpfulness judge preferred the wrong answer. A release gate needs the evaluator that encodes your business rule.
+
+A plain-language walkthrough of the architecture is in [docs/architecture.md](docs/architecture.md).
+
 ## What this build shows
 
 - **One trace across agent and service.** The agent's tool call carries `traceparent` over a SigV4-signed HTTP request, so the agent span and the service span share a trace ID. The Omni application map shows `sre-agent` (Agent) calling `telemetry-api` (Service).
@@ -19,6 +57,8 @@ This repo builds the agent and the service on AWS Lambda, traces both into one t
 - **The fix is measured, not assumed.** v1 and v2 prompts run against the same deployment and the same stale data. v2 passes 7 of 7 stale cases; v1 passes 0 of 6.
 
 ## Architecture
+
+In one sentence: a test script asks the agent about an alert, the agent asks the model and calls a telemetry service, both report traces to CloudWatch, and every answer is scored and alarmed on. The step-by-step version is in [docs/architecture.md](docs/architecture.md).
 
 ```mermaid
 flowchart TB
@@ -177,15 +217,29 @@ Alarm time is detection time, not onset. The investigator anchored on the time i
 
 ## Screenshots
 
-Place scrubbed images in `docs/images/`.
+**One trace across the agent and the service it calls.** The agent span, two model calls, the `get_alert` tool, the signed HTTP call and the `telemetry-api` handler share one trace ID. The 120 ms `handler.handler` span is the fresh-mode query; the bad deploy removes it.
 
-| Image | Shows |
-|---|---|
-| `agent-trace-cross-service.png` | One trace: agent → model → tool → telemetry-api → handler |
-| `app-map-edge.png` | sre-agent (Agent) → telemetry-api (Service) and Nova |
-| `v1-v2-traces.png` | 0% errors, v1 traces at 0.00 and v2 traces at 1.00 |
-| `omni-agent-rca.png` | Omni agent root cause panel |
-| `alarm-email.png` | ALARM notification |
+![Cross-service trace](docs/images/01-agent-trace-cross-service.png)
+
+**The application map stays green.** `sre-agent` (Agent) calls `telemetry-api` (Service) and Nova. The service panel shows requests, low latency and zero errors.
+
+![Application map and service panel](docs/images/02-app-map-and-service.png)
+
+**Omni needs traffic before it colours a node.** With 6 requests the map shows "Insufficient traffic … need ≥ 100". `scripts/service_load.py` provides that baseline without spending tokens.
+
+![Map traffic threshold](docs/images/06-app-map-traffic-threshold.png)
+
+**Zero errors, wrong answers, and the fix.** Same deployment, same stale data. v1 traces score 0.00 on freshness, v2 traces score 1.00. Error rate is 0% throughout.
+
+![v1 vs v2 traces](docs/images/03-v1-vs-v2-traces.png)
+
+**The Omni agent's investigation.** Asked about the symptom only, it found the stale payload, the missing freshness telemetry and the right next step (CloudTrail), but not the deploy itself.
+
+![Omni agent root cause analysis](docs/images/04-omni-agent-rca.png)
+
+**The alarm fired and recovered.** The ALARM → OK notification after traffic stopped. With missing data treated as not breaching, a quiet period returns the alarm to OK even if the bad deploy is still live (see Limitations).
+
+![Alarm recovery email](docs/images/05-alarm-recovery-email.png)
 
 ## What I learned
 

@@ -25,6 +25,9 @@ __pycache__/
 *.tfstate.*
 *.tfplan
 crash.log
+# Account-specific values (keep the example committed)
+*.tfvars
+!*.tfvars.example
 
 # Build artifacts
 dist/
@@ -33,4 +36,3 @@ dist/
 # OS
 Thumbs.db
 deploy/terraform/build/
-*.tfplan
